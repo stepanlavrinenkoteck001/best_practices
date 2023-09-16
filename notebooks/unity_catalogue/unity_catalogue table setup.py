@@ -46,8 +46,14 @@ psdf_small
 
 # COMMAND ----------
 
+#remove any prior saves
+ps.sql("DROP TABLE if EXISTS dabds_qa.dff.test_small")
+
+
+# COMMAND ----------
+
 table_mode = 'overwrite' # or 'append' or other options in docs
-psdf_small.to_table('dabds_qa.dff.test',
+psdf_small.to_table('dabds_qa.dff.test_small',
                     mode = table_mode)
 
 
@@ -68,8 +74,10 @@ psdf_small.loc[:, 'LATITUDE_DIFF'] = psdf_small['LATITUDE'] - psdf_small['FRAGTR
 
 # COMMAND ----------
 
-psdf_small.to_table('dabds_qa.dff.test',
-                    mode = table_mode)
+# psdf_small.to_table('dabds_qa.dff.test_small',
+#                     mode = table_mode)
+
+## shoudl produce an error:AnalysisException: A schema mismatch detected when writing to the Delta table (Table ID: 45271433-38e4-4ad9-86aa-c8a533dab949).
 
 # COMMAND ----------
 
@@ -91,7 +99,7 @@ psdf_small.loc[:,'FRAGTRACK_LONGITUDE'] = psdf_small['LONGITUDE']
 
 # COMMAND ----------
 
-psdf_small.to_table('dabds_qa.dff.test',
+psdf_small.to_table('dabds_qa.dff.test_small',
                     mode = table_mode)
 
 # COMMAND ----------
@@ -107,21 +115,21 @@ psdf_small.to_table('dabds_qa.dff.test',
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC DESCRIBE HISTORY dabds_qa.dff.test
+# MAGIC DESCRIBE HISTORY dabds_qa.dff.test_small
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Use VERSION argument to fetch correct dataset version
+# MAGIC Use VERSION argument to fetch correct dataset version. Version 0 should have a mismatch in longitude, version 1 should have same longitudes
 
 # COMMAND ----------
 
-psdf_earliest = ps.sql('SELECT * FROM dabds_qa.dff.test VERSION AS OF 0').head(1)
+psdf_earliest = ps.sql('SELECT * FROM dabds_qa.dff.test_small VERSION AS OF 0').head(1)
 psdf_earliest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
 
 # COMMAND ----------
 
-psdf_latest = ps.sql('SELECT * FROM dabds_qa.dff.test VERSION AS OF 1').head(1)
+psdf_latest = ps.sql('SELECT * FROM dabds_qa.dff.test_small VERSION AS OF 1').head(1)
 psdf_latest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
 
 # COMMAND ----------
@@ -131,13 +139,79 @@ psdf_latest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
 
 # COMMAND ----------
 
-psdf_earliest = ps.sql("SELECT * FROM dabds_qa.dff.test TIMESTAMP AS OF '2023-09-15T22:26:41.000+0000'").head(1)
-psdf_earliest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
+## WIll need the correct timestamp there
+# psdf_earliest = ps.sql("SELECT * FROM dabds_qa.dff.test_small TIMESTAMP AS OF '2023-09-15T22:26:41.000+0000'").head(1)
+# psdf_earliest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Z-ordering and optimization
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC First, write full frag_track table to unity catalogue. Drop previous tables for consistency. Optimization would not be noticable on atable with only 10 rows, so we'd need a larger one
+
+# COMMAND ----------
+
+import pyspark.pandas as ps
+display(ps.sql("DROP TABLE if EXISTS dabds_qa.dff.test"))
+psdf = ps.read_table('hive_metastore.dabo_datamarts_hvc.fact_fragmentation')
+psdf.to_table('dabds_qa.dff.test',
+                )
+
+# COMMAND ----------
+
+# MAGIC %sql
+# MAGIC DESCRIBE HISTORY dabds_qa.dff.test
+
+# COMMAND ----------
+
+import time
+start = time.time()
+
+df_test = ps.sql("SELECT PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION, AVG(new_bin0) AS new_bin0_avg FROM dabds_qa.dff.test GROUP BY PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION"
+)
+
+end = time.time()
+diff=end - start
+print(diff)
+
+# COMMAND ----------
+
+df_test.head()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC z-order by elevation, since we excpect a loop to read in elevations one-by-one. This would only make sense if we read one-by-one from storage. If we load the full frame and then loop over it, there won't be an increase in performance
+
+# COMMAND ----------
+
+# optimize - will compact the table. It'll get rid of small delta files and keep only the larger ones
+# zorder - it will make sure similar column values are stored close by
+
+display(ps.sql("DROP TABLE if EXISTS dabds_qa.dff.test"))
+psdf.to_table('dabds_qa.dff.test')
+display(ps.sql('OPTIMIZE dabds_qa.dff.test ZORDER BY (WENCO_LOAD_BENCH_ELEVATION)'))
+
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC optimze docs https://docs.databricks.com/en/sql/language-manual/delta-optimize.html
+
+# COMMAND ----------
+
+start = time.time()
+
+df_test = ps.sql("SELECT PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION, AVG(new_bin0) AS new_bin0_avg FROM dabds_qa.dff.test GROUP BY PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION"
+)
+
+end = time.time()
+diff=end - start
+print(diff)
 
 # COMMAND ----------
 
