@@ -4,6 +4,11 @@
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC [unity catalogue docs](https://docs.databricks.com/en/data-governance/unity-catalog/index.html)
+
+# COMMAND ----------
+
 #use dabds_qa catalogue
 spark.sql("USE CATALOG dabds_qa")
 
@@ -146,12 +151,17 @@ psdf_latest[['LONGITUDE', 'FRAGTRACK_LONGITUDE']]
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Z-ordering and optimization
+# MAGIC ## Z-ordering and compaction/optimization
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC First, write full frag_track table to unity catalogue. Drop previous tables for consistency. Optimization would not be noticable on atable with only 10 rows, so we'd need a larger one
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Note: be carefull to use DROP, this will remove all data without ability to rollback. You can use TRUNCATE or DELETE if you want to be able to rollback. [docs on TRUNCATE, DELETE AND DROP](https://sparkbyexamples.com/spark/spark-drop-delete-truncate-differences/)
 
 # COMMAND ----------
 
@@ -200,6 +210,25 @@ display(ps.sql('OPTIMIZE dabds_qa.dff.test ZORDER BY (WENCO_LOAD_BENCH_ELEVATION
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ### Compaction/optimzation metrics review
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Let's go through the metrics in describe in more detail:\
+# MAGIC numFilesAdded: 13 (how many files Z-order produce)\
+# MAGIC numFilesRemoved: 8 (how many files were there before z-order)\
+# MAGIC So, we went down from 13 files to 8. That's how databricks compaction works - it tries to have files of about ~1GB each, with data evenly spread across them\
+# MAGIC How about the file size?\
+# MAGIC filesAdded.totalSize: 534074890 = ~.53GB (size of data added)\
+# MAGIC filesRemoved.totalSize: 572540889 = ~ .57Gb (size of data added)\
+# MAGIC So, we went down by about .04Gb in size. Not a whole lot, but it adds up. This is only the compaction part, you'll also win on accessing relevant data faster by reading in just one file instead of multiple ones.
+# MAGIC
+# MAGIC
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC optimze docs https://docs.databricks.com/en/sql/language-manual/delta-optimize.html
 
 # COMMAND ----------
@@ -215,4 +244,82 @@ print(diff)
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC An improvement of only .001 seconds in this query
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Z-ordering really shines best with filtering
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC This way, we use the fact that we have to read only the files that have the subset of data we're interested in. The other files don't have to be read in
+
+# COMMAND ----------
+
+import pyspark.pandas as ps
+display(ps.sql("DROP TABLE if EXISTS dabds_qa.dff.test"))
+psdf = ps.read_table('hive_metastore.dabo_datamarts_hvc.fact_fragmentation')
+psdf.to_table('dabds_qa.dff.test',
+                )
+
+# COMMAND ----------
+
+psdf.WENCO_LOAD_BENCH_ELEVATION[0]
+
+# COMMAND ----------
+
+import time
+start = time.time()
+
+df_test = ps.sql("SELECT PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION FROM dabds_qa.dff.test WHERE WENCO_LOAD_BENCH_ELEVATION = '950.0' GROUP BY PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION"
+)
+
+end = time.time()
+diff=end - start
+print(diff)
+
+# COMMAND ----------
+
+display(ps.sql('OPTIMIZE dabds_qa.dff.test ZORDER BY (WENCO_LOAD_BENCH_ELEVATION)'))
+
+
+# COMMAND ----------
+
+start = time.time()
+
+df_test = ps.sql("SELECT PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION FROM dabds_qa.dff.test WHERE WENCO_LOAD_BENCH_ELEVATION = '950.0' GROUP BY PATTERN_ID, WENCO_LOAD_BENCH_ELEVATION"
+)
+
+end = time.time()
+diff=end - start
+print(diff)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC An improvement of ~ .08 seconds with filtering query 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Other tips and tricks
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Saving to delta tables
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC When we have to fetch a csv and work with that (like we had to do with shotplus), it will be saved to parquet by default. Parquet is much slower than delta format - see [delta tables in best practicess notes](https://teckresources.atlassian.net/wiki/spaces/R2PDB/pages/3272212886/Databricks+file+formats+-+delta+table+hive+metastore+and+streaming+tables). So best to directly save it to delta. 
+
+# COMMAND ----------
+
+# psdf = pyspark.pandas.read_csv('some_csv_file.csv')
+# psdf.to_delta('dabds_qa.dff.delta_table')
+# or psdf.to_table('dabds_qa.dff.delta_table')
 
